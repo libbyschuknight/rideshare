@@ -1,6 +1,71 @@
->echo $DB_URL
+# Lib's Notes
 
-export DB_URL="postgres://libby:@localhost:5432/postgres"
+## Useful Commands
+
+```bash
+ psql $DATABASE_URL # start the db
+```
+
+```sql
+
+
+
+```
+
+
+
+
+## Other
+
+
+```sql
+>SHOW config_file;
+                   config_file
+-------------------------------------------------
+ /opt/homebrew/var/postgresql@15/postgresql.conf
+(1 row)
+
+>SHOW data_directory;
+         data_directory
+---------------------------------
+ /opt/homebrew/var/postgresql@15
+
+```
+
+
+
+```bash
+pg_ctl restart \
+--pgdata "/opt/homebrew/var/postgresql@15"
+
+# echo "Set PGDATA: $PGDATA"
+
+
+psql -U libby -d rideshare_development
+
+
+SELECT * FROM pg_roles;
+
+SELECT current_user;
+
+SELECT * FROM pg_stat_activity
+WHERE pid = (SELECT 79473);
+
+```
+
+
+
+## Setup
+
+<!-- >echo $DB_URL
+
+export DB_URL="postgres://libby:@localhost:5432/postgres" -->
+
+<!-- from env -->
+export DATABASE_URL=postgres://owner:@localhost:5432/rideshare_development
+
+>echo $DATABASE_URL
+postgres://owner:@localhost:5432/rideshare_development
 
 
 >echo $RIDESHARE_DB_PASSWORD
