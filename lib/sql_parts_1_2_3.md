@@ -1,128 +1,6 @@
-# Lib's Notes
+# SQL from book
 
-## Useful Commands
-
-```bash
- psql $DATABASE_URL # start the db
-```
-
-
-```sql
->SHOW config_file;
-                   config_file
--------------------------------------------------
- /opt/homebrew/var/postgresql@15/postgresql.conf
-(1 row)
-
->SHOW data_directory;
-         data_directory
----------------------------------
- /opt/homebrew/var/postgresql@15
-```
-
-```bash
-code  /opt/homebrew/var/postgresql@15/postgresql.conf
-
-pg_ctl restart \
---pgdata "/opt/homebrew/var/postgresql@15"
-
-# echo "Set PGDATA: $PGDATA"
-
-
-psql -U libby -d rideshare_development
-```
-
-
-## Setup
-
-<!-- For initial setup -->
-```bash
->export DB_URL="postgres://postgres:@localhost:5432/postgres"
->echo $DB_URL
-postgres://postgres:@localhost:5432/postgres
-
-
->export RIDESHARE_DB_PASSWORD=$(openssl rand -hex 12)
->echo $RIDESHARE_DB_PASSWORD
-15d0bc1ac663aa5ea1be8644
-
-
-# <!-- from env comes after setup run-->
-export DATABASE_URL=postgres://owner:@localhost:5432/rideshare_development
-
->echo $DATABASE_URL
-postgres://owner:@localhost:5432/rideshare_development
-
-
-
-
-psql: error: connection to server at "localhost" (::1), port 5432 failed: could not initiate GSSAPI security context:  The operation or option is not available: Credential for asked mech-type mech not found in the credential handle
-connection to server at "localhost" (::1), port 5432 failed: FATAL:  role "postgres" does not exist
-psql: error: connection to server at "localhost" (::1), port 5432 failed: could not initiate GSSAPI security context:  The operation or option is not available: Credential for asked mech-type mech not found in the credential handle
-
-
-
-# ~20,000
-bin/rails data_generators:generate_all
-
-
-# 10,000,000
-cd db
-time sh scripts/bulk_load.sh
-
-```
-
-### Chapter 3 - data
-
-for postgresql 15
-
-```sql
-FROM GENERATE_SERIES(1, 10_000_000) seq; -- => 10000000
-```
-
-
-
-### Changing Config file
-
-/opt/homebrew/var/postgresql@15/postgresql.conf
-
-```conf
-shared_preload_libraries = 'pg_stat_statements'
-```
-
-
-
-### Tracking Columns with Sensitive Information
-
-```sql
-COMMENT ON COLUMN users.email IS 'sensitive_data=true';
-```
-
-https://guides.rubyonrails.org/active_record_migrations.html#comments
-
-https://www.bigbinary.com/blog/rails-5-supports-adding-comments-migrations
-
-
-## Useful SQL
-```sql
-SELECT * FROM pg_roles;
-
-SELECT current_user;
-
-SELECT * FROM pg_stat_activity
-WHERE pid = (SELECT 79473);
-
--- select the count of users
-SELECT COUNT(*) FROM users;
-
-
-```
-
-
-
-## SQL from book
-
-### Starting an Email Scrubber Function
+## Starting an Email Scrubber Function
 
 ```sql
 CREATE OR REPLACE FUNCTION SCRUB_EMAIL(email_address varchar(255))
@@ -350,18 +228,97 @@ WHERE indrelid = 'users'::REGCLASS;
 CREATE UNIQUE INDEX index_users_on_email2
 ON users_copy USING btree (email);
 
-CREATE UNIQUE INDEX index_users_on_last_name2
+CREATE INDEX index_users_on_last_name2
 ON users_copy USING btree (last_name);
 
-ERROR:  could not create unique index "index_users_on_last_name2"
-DETAIL:  Key (last_name)=(Lakin) is duplicated.
-STATEMENT:  CREATE UNIQUE INDEX index_users_on_last_name2
-	ON users_copy USING btree (last_name);
-ERROR:  could not create unique index "index_users_on_last_name2"
-DETAIL:  Key (last_name)=(Lakin) is duplicated.
-
-
-
-
+-- not primary key ?
 CREATE UNIQUE INDEX users_pkey2
 ON users_copy USING btree (id);
+
+-- add primary key
+ALTER TABLE users_copy
+ADD PRIMARY KEY (id);
+
+-- drop users_pkey2 index
+DROP INDEX users_pkey2;
+
+
+
+-- sql/finalize_table_copying_users.sql
+BEGIN;
+-- drop the original table and related objects
+DROP TABLE users CASCADE;
+-- rename the destination table to be the source table name
+ALTER TABLE users_copy RENAME TO users;
+COMMIT;
+
+
+\d users
+                                              Table "rideshare.users"
+         Column         |              Type              | Collation | Nullable |              Default
+------------------------+--------------------------------+-----------+----------+-----------------------------------
+ id                     | bigint                         |           | not null | nextval('users_id_seq'::regclass)
+ first_name             | character varying              |           | not null |
+ last_name              | character varying              |           | not null |
+ email                  | character varying              |           | not null |
+ type                   | character varying              |           | not null |
+ created_at             | timestamp(6) without time zone |           | not null |
+ updated_at             | timestamp(6) without time zone |           | not null |
+ password_digest        | character varying              |           |          |
+ trips_count            | integer                        |           |          |
+ drivers_license_number | character varying(100)         |           |          |
+Indexes:
+    "users_copy_pkey" PRIMARY KEY, btree (id)
+    "index_users_on_email2" UNIQUE, btree (email)
+    "index_users_on_last_name2" btree (last_name)
+
+-- Does not have the Referenced by:
+```
+
+### Using Direct Updates for Text Replacement
+
+```sql
+-- sql/direct_updates_users.sql
+UPDATE users
+SET email = SCRUB_EMAIL(email);
+
+-- sql/vacuum_analyze_users.sql
+VACUUM (ANALYZE, VERBOSE) users;
+
+
+sql/reindex_users.sql
+REINDEX INDEX index_users_on_email2;
+```
+
+### Performing Updates in Batches
+
+```sql
+-- sql/scrub_batched_direct_updates.sql
+CREATE OR REPLACE PROCEDURE SCRUB_BATCHES()
+LANGUAGE PLPGSQL
+AS $$
+DECLARE
+  current_id INT := (SELECT MIN(id) FROM users);
+  max_id INT := (SELECT MAX(id) FROM users);
+  batch_size INT := 1000;
+  rows_updated INT;
+BEGIN
+  WHILE current_id <= max_id LOOP
+    -- the UPDATE by `id` range
+    UPDATE users
+    SET email = SCRUB_EMAIL(email)
+    WHERE id >= current_id
+    AND id < current_id + batch_size;
+    GET DIAGNOSTICS rows_updated = ROW_COUNT;
+    COMMIT;
+    RAISE NOTICE 'current_id: % - Number of rows updated: %',
+    current_id, rows_updated;
+    current_id := current_id + batch_size + 1;
+  END LOOP;
+END;
+$$;
+-- Call the Procedure
+CALL SCRUB_BATCHES();
+```
+
+### What’s Next for Your Performance Database
